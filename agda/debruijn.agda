@@ -11,9 +11,10 @@ module DeBruijn where
 -- The goal of this module is to interpolate de Bruijn's original definitions
 -- to those shown in PFLA.
 
+open import Data.Product using (_,_)
 open import Data.Nat using (ℕ; zero; suc; _+_; _≤_ ;  z≤n ; s≤s ; ≤-pred )
 open import Codata.Stream 
-  using (Stream; _∷_; lookup; map; zipWith; tail; nats)
+  using (Stream; _∷_; lookup; map; zipWith; tail; nats; unfold)
 open import Codata.Thunk using (force)
 open import Size
 import Relation.Binary.PropositionalEquality as Eq
@@ -261,6 +262,39 @@ module Streams where
    lookup-suc {zero}  {a ∷ b} = refl
    lookup-suc {suc k} {a ∷ b} = lookup-suc {k}{b .force}
 
+   -- And the generalized version of the above lemma
+   lookup-map-comm : ∀ {A : Set} → {s : Stream A ∞}
+                   → (k : ℕ) → (f : A → A)
+                   → lookup k (map f s) ≡ f (lookup k s)
+   lookup-map-comm {s = hd ∷ _}  zero     _ = refl
+   lookup-map-comm {s = _ ∷ tl} (suc k)   f = lookup-map-comm k f
+
+   -- Defined for readability in `lookup-count-≤-suc`, corresponds to
+   -- counts generated from repeated mappings of `suc` over `nats`
+   count : ℕ → Stream ℕ ∞
+   count k = unfold (λ x → suc x , x) k
+
+   -- If all values in a count starting at k are less than i,
+   -- then all values in a count starting at suc k are less than
+   -- suc i.
+   lookup-count-≤-suc : ∀ {i k : ℕ}
+                      → (n : ℕ)
+                      → lookup n (count k) ≤ i
+                        --------------------------------
+                      → lookup n (count (suc k)) ≤ suc i
+   lookup-count-≤-suc zero    pf = s≤s pf
+   lookup-count-≤-suc (suc n) pf = lookup-count-≤-suc n pf
+
+   lookup-≤-suc : ∀ {j : ℕ} {ρ : Stream ℕ ∞}
+                → (k : ℕ)
+                → lookup k ρ ≤ j
+                  ------------------------
+                → lookup k (map suc ρ) ≤ suc j
+   lookup-≤-suc {ρ = ρ} zero i≤j   with ρ
+   ...                                | i ∷ _ = s≤s i≤j
+   lookup-≤-suc {ρ = ρ} (suc k) pf with ρ
+   ...                                | _ ∷ tl = lookup-≤-suc k pf
+
    -------------------------------------------------------------------------
    -- We can extend the concept of scope to renamings and substitutions
    -- 
@@ -276,8 +310,21 @@ module Streams where
    -- indices.
    ρ-id-scope : ∀ {i} -> ρ-scope i i ρ-id
    ρ-id-scope {i} z≤n =  z≤n
-   ρ-id-scope {suc i} (s≤s pf) = {!!}
+   ρ-id-scope {suc i} (s≤s {m} pf) with m     | ρ-id-scope {i} pf
+   ...                                | zero  | pf′ = s≤s pf′
+   ...                                | suc n | pf′ = lookup-count-≤-suc n pf′
 
+   ρ-incr-scope : ∀ {j : ℕ} → ρ-scope j (suc j) ρ-incr
+   ρ-incr-scope {zero} {zero} _ = s≤s z≤n
+   ρ-incr-scope {suc j} {k} le
+     rewrite lookup-map-comm {s = nats} k suc
+     with le
+   ...  | z≤n         = s≤s z≤n
+   ...  | s≤s {k} k≤j
+     with ρ-incr-scope {j} k≤j
+   ...  | ih rewrite lookup-map-comm {s = nats} k suc
+     with ih
+   ...  | s≤s ih = s≤s (lookup-count-≤-suc k ih)
 
    -- A substitution is scoped by i and j when all indices less than or equal to i
    -- map to namefree expressions scoped by j. Like renamings,
@@ -290,7 +337,8 @@ module Streams where
    ext-scope : ∀ {i j : ℕ} {ρ : Renaming} -> (ρ-scope i j ρ) 
      -> (ρ-scope (suc i) (suc j) (ext ρ)) 
    ext-scope pf        {zero} =  λ _ -> z≤n
-   ext-scope {i}{j} pf {suc k} =  λ p1 -> {!!}
+   ext-scope {i}{j} pf {suc k} (s≤s k≤i) with pf k≤i
+   ...                                      | pf′ = lookup-≤-suc k pf′
 
    rename-scope : ∀ {i j : ℕ}{ρ : Renaming}{M : NF} -> (ρ-scope i j ρ) 
      -> scope i M -> scope j (rename ρ M)
@@ -299,11 +347,14 @@ module Streams where
    rename-scope {ρ} pf (d-ƛ dm) = d-ƛ (rename-scope (ext-scope pf) dm)
 
    exts-scope : ∀ {i j : ℕ} {σ : Substitution} -> (σ-scope i j σ) ->
-      (σ-scope (suc i) (suc j) (exts σ)) 
-   exts-scope pf z≤n = {!!}
-   exts-scope pf (s≤s lt) = {!!}
+      (σ-scope (suc i) (suc j) (exts σ))
+   exts-scope pf z≤n = d-# z≤n
+   exts-scope {σ = σ} pf {suc k} (s≤s k≤i)
+     with lookup-map-comm {s = σ} k (rename ρ-incr) | pf k≤i
+   ...  | lookup-map-comm-≡                         | pf′
+     rewrite lookup-map-comm-≡ = rename-scope ρ-incr-scope pf′
 
-   subst-scope : ∀ {i j : ℕ}{σ : Substitution}{M : NF} -> (σ-scope i j σ) 
+   subst-scope : ∀ {i j : ℕ}{σ : Substitution}{M : NF} -> (σ-scope i j σ)
      -> scope i M -> scope j (subst σ M)
    subst-scope pf (d-# x) = pf x
    subst-scope pf (d-ƛ f) =  d-ƛ (subst-scope (exts-scope pf) f)
